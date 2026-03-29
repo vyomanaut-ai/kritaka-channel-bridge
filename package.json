@@ -1,0 +1,33 @@
+{
+  "name": "@kritaka/channel-bridge",
+  "version": "0.1.0",
+  "description": "MCP server connecting Claude Code agents to the Kritaka platform",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "kritaka-bridge": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vyomanaut-ai/kritaka-channel-bridge.git"
+  },
+  "keywords": ["kritaka", "claude-code", "mcp", "channels", "ai-agents"],
+  "author": "Vyomanaut <sala@vyomanaut.ai>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/vyomanaut-ai/kritaka-channel-bridge/issues"
+  },
+  "homepage": "https://github.com/vyomanaut-ai/kritaka-channel-bridge#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^22.0.0"
+  }
+}
