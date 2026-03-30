@@ -103,6 +103,21 @@ export class HubClient {
     )
   }
 
+  sendReaction(channelId: string, messageId: string, emoji: string, action: 'add' | 'remove'): void {
+    if (!this.socket || !this.connected) return
+    this.socket.write(
+      encodeMessage({
+        type: action === 'remove' ? 'reaction_remove' : 'reaction_add',
+        channel_id: channelId,
+        message_id: messageId,
+        emoji,
+        agent_id: this.agentId,
+        author_name: this.agentName,
+        author_type: 'agent',
+      }),
+    )
+  }
+
   requestHistory(channelId: string, limit: number): Promise<HistoryEntry[]> {
     if (!this.socket || !this.connected) return Promise.resolve([])
 
