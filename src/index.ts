@@ -49,10 +49,11 @@ const AGENT_ID = process.env.KRITAKA_AGENT_ID ?? 'unknown'
 const AGENT_NAME = process.env.KRITAKA_AGENT_NAME ?? 'unknown'
 const HUB_PORT = parseInt(process.env.KRITAKA_HUB_PORT ?? '19850', 10)
 const SUBSCRIPTIONS = (process.env.KRITAKA_SUBSCRIPTIONS ?? '').split(',').filter(Boolean)
+const CHANNEL_NAMES = (process.env.KRITAKA_CHANNEL_NAMES ?? '').split(',').filter(Boolean)
 
 // Build the instructions that get injected into Claude's system prompt
 const channelList = SUBSCRIPTIONS.length > 0
-  ? `Subscribed channels: ${SUBSCRIPTIONS.join(', ')}`
+  ? `Subscribed channels:\n${SUBSCRIPTIONS.map((id, i) => `  ${id} — #${CHANNEL_NAMES[i] ?? id}`).join('\n')}`
   : 'No channel subscriptions configured.'
 
 const instructions = `You are connected to Kritaka, a multi-agent orchestration platform.
@@ -100,9 +101,13 @@ mcp.registerTool(
     description: 'List the Kritaka channels this agent is subscribed to.',
   },
   async () => {
-    const list = SUBSCRIPTIONS.length > 0
-      ? SUBSCRIPTIONS.join('\n')
-      : 'No channels subscribed.'
+    if (SUBSCRIPTIONS.length === 0) {
+      return { content: [{ type: 'text' as const, text: 'No channels subscribed.' }] }
+    }
+    const list = SUBSCRIPTIONS.map((id, i) => {
+      const name = CHANNEL_NAMES[i]
+      return name ? `${id}\n${name}` : id
+    }).join('\n')
     return { content: [{ type: 'text' as const, text: list }] }
   },
 )
