@@ -8,10 +8,42 @@
  * - Forwards hub messages to Claude as `notifications/claude/channel` events
  * - Exposes channel_reply, channel_list, and channel_history tools
  */
+import * as fs from 'fs'
+import * as path from 'path'
+import * as os from 'os'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { HubClient } from './hub-client.js'
+
+const IMAGE_TMP_DIR = path.join(os.tmpdir(), 'kritaka-images')
+
+/**
+ * Decode a base64 data URI, write to a temp file, and return the file path.
+ * Returns null if the data URI is invalid or the write fails.
+ */
+function writeImageToTempFile(dataUri: string): string | null {
+  try {
+    const match = dataUri.match(/^data:(image\/[\w+.-]+);base64,(.+)$/)
+    if (!match) return null
+
+    const mimeType = match[1]
+    const base64Data = match[2]
+    const sub = mimeType.split('/')[1].replace('+xml', '') // image/svg+xml → svg
+    const ext = sub === 'jpeg' ? 'jpg' : sub
+
+    fs.mkdirSync(IMAGE_TMP_DIR, { recursive: true })
+
+    const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
+    const filePath = path.join(IMAGE_TMP_DIR, filename)
+
+    fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'))
+    return filePath
+  } catch (err: any) {
+    process.stderr.write(`[Bridge] Failed to write image to temp file: ${err.message}\n`)
+    return null
+  }
+}
 
 const AGENT_ID = process.env.KRITAKA_AGENT_ID ?? 'unknown'
 const AGENT_NAME = process.env.KRITAKA_AGENT_NAME ?? 'unknown'
@@ -132,8 +164,21 @@ async function main() {
       // Build content — include image reference if present
       let content = msg.content ?? ''
       const metadata = msg.metadata as Record<string, string> | undefined
+      let imageRef: string | undefined
+
       if (metadata?.image) {
-        content += content ? `\n[Image: ${metadata.image}]` : `[Image: ${metadata.image}]`
+        if (metadata.image.startsWith('data:')) {
+          // Base64 data URI — write to temp file so agents can read by path
+          const imagePath = writeImageToTempFile(metadata.image)
+          if (imagePath) {
+            content += content ? `\n[Image: ${imagePath}]` : `[Image: ${imagePath}]`
+            imageRef = imagePath
+          }
+        } else {
+          // URL or other reference — pass through as-is
+          content += content ? `\n[Image: ${metadata.image}]` : `[Image: ${metadata.image}]`
+          imageRef = metadata.image
+        }
       }
 
       await mcp.server.notification({
@@ -148,7 +193,7 @@ async function main() {
             author_id: msg.author_id ?? '',
             message_id: msg.message_id ?? '',
             timestamp: msg.timestamp ?? '',
-            ...(metadata?.image ? { image_url: metadata.image } : {}),
+            ...(imageRef ? { image_path: imageRef } : {}),
           },
         },
       })
