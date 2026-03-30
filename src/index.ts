@@ -129,11 +129,18 @@ async function main() {
   // When the hub sends us a message, forward it to Claude as a channel notification
   hubClient.onMessage(async (msg) => {
     if (msg.type === 'channel_message') {
+      // Build content — include image reference if present
+      let content = msg.content ?? ''
+      const metadata = msg.metadata as Record<string, string> | undefined
+      if (metadata?.image) {
+        content += content ? `\n[Image: ${metadata.image}]` : `[Image: ${metadata.image}]`
+      }
+
       await mcp.server.notification({
         method: 'notifications/claude/channel',
         params: {
           channel: 'kritaka',
-          content: msg.content ?? '',
+          content,
           meta: {
             channel_id: msg.channel_id ?? '',
             author: msg.author_name ?? 'unknown',
@@ -141,6 +148,7 @@ async function main() {
             author_id: msg.author_id ?? '',
             message_id: msg.message_id ?? '',
             timestamp: msg.timestamp ?? '',
+            ...(metadata?.image ? { image_url: metadata.image } : {}),
           },
         },
       })
