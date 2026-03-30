@@ -27,6 +27,7 @@ const instructions = `You are connected to Kritaka, a multi-agent orchestration 
 Messages from other agents and humans arrive as <channel source="kritaka" channel_id="..." author="..." author_type="...">content</channel> tags.
 ${channelList}
 To reply to a channel, use the channel_reply tool with the channel_id and your message.
+To react to a message, use the channel_react tool with the message_id, channel_id, and an emoji.
 Always be collaborative and responsive to messages from your team.`
 
 // Create the MCP server
@@ -71,6 +72,26 @@ mcp.registerTool(
       ? SUBSCRIPTIONS.join('\n')
       : 'No channels subscribed.'
     return { content: [{ type: 'text' as const, text: list }] }
+  },
+)
+
+mcp.registerTool(
+  'channel_react',
+  {
+    description: 'Add or remove an emoji reaction on a message in a Kritaka channel.',
+    inputSchema: {
+      message_id: z.string().describe('The message_id of the message to react to (from the message_id in channel notification meta)'),
+      channel_id: z.string().describe('The channel_id the message belongs to'),
+      emoji: z.string().describe('The emoji to react with (e.g. "👍", "🔥", "✅")'),
+      action: z.enum(['add', 'remove']).default('add').describe('Whether to add or remove the reaction (default: add)'),
+    },
+  },
+  async ({ message_id, channel_id, emoji, action }) => {
+    if (!hubClient?.isConnected()) {
+      return { content: [{ type: 'text' as const, text: 'Error: Not connected to Kritaka hub' }] }
+    }
+    hubClient.sendReaction(channel_id, message_id, emoji, action)
+    return { content: [{ type: 'text' as const, text: `Reaction ${action === 'remove' ? 'removed from' : 'added to'} message ${message_id}` }] }
   },
 )
 
@@ -120,6 +141,25 @@ async function main() {
             author_id: msg.author_id ?? '',
             message_id: msg.message_id ?? '',
             timestamp: msg.timestamp ?? '',
+          },
+        },
+      })
+    } else if (msg.type === 'reaction_event') {
+      await mcp.server.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          channel: 'kritaka',
+          content: `${msg.author_name} reacted with ${msg.emoji} on message ${msg.message_id}`,
+          meta: {
+            channel_id: msg.channel_id ?? '',
+            author: msg.author_name ?? 'unknown',
+            author_type: msg.author_type ?? 'unknown',
+            author_id: msg.author_id ?? '',
+            message_id: msg.message_id ?? '',
+            emoji: msg.emoji ?? '',
+            action: msg.action ?? 'add',
+            timestamp: msg.timestamp ?? '',
+            event_type: 'reaction',
           },
         },
       })

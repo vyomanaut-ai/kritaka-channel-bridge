@@ -1,7 +1,7 @@
 // Hub <-> Bridge wire protocol (newline-delimited JSON over TCP)
 
 export interface HubMessage {
-  type: 'channel_message' | 'subscribe' | 'unsubscribe' | 'register' | 'ack' | 'history_request' | 'history_response'
+  type: 'channel_message' | 'subscribe' | 'unsubscribe' | 'register' | 'ack' | 'history_request' | 'history_response' | 'reaction_add' | 'reaction_remove' | 'reaction_event'
   channel_id?: string
   agent_id?: string
   agent_name?: string
@@ -24,6 +24,9 @@ export interface HubMessage {
     content: string
     created_at: string
   }>
+  // For reaction_add, reaction_remove, reaction_event
+  emoji?: string
+  action?: 'add' | 'remove'
 }
 
 export const HUB_PORT = 19850
