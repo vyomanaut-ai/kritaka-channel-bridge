@@ -13,6 +13,12 @@ export class HubClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private connected = false
   private historyResolvers = new Map<string, (entries: HistoryEntry[]) => void>()
+  private connectAttempt = 0
+  private ackTimer: ReturnType<typeof setTimeout> | null = null
+
+  private diag(msg: string): void {
+    process.stderr.write(`[Bridge ${new Date().toISOString()}] ${msg}\n`)
+  }
 
   constructor(
     private port: number,
@@ -24,12 +30,16 @@ export class HubClient {
   connect(): void {
     if (this.socket) return
 
+    this.connectAttempt += 1
+    const attempt = this.connectAttempt
+    this.diag(`connect attempt #${attempt} → 127.0.0.1:${this.port}`)
+
     this.socket = net.createConnection({ port: this.port, host: '127.0.0.1' }, () => {
       this.connected = true
-      process.stderr.write(`[Bridge] Connected to hub on port ${this.port}\n`)
+      this.diag(`TCP connected (attempt #${attempt}); sending register for agent=${this.agentId} channels=${this.channelIds.length}`)
 
       // Register with the hub
-      this.socket!.write(
+      const registerWritten = this.socket!.write(
         encodeMessage({
           type: 'register',
           agent_id: this.agentId,
@@ -37,6 +47,14 @@ export class HubClient {
           channel_ids: this.channelIds,
         }),
       )
+      this.diag(`register write returned ${registerWritten} (false = buffered due to backpressure)`)
+
+      // Watchdog: expect an ack within 2s
+      if (this.ackTimer) clearTimeout(this.ackTimer)
+      this.ackTimer = setTimeout(() => {
+        this.diag('WARNING: no ack from hub within 2s of register — hub may not be processing us')
+        this.ackTimer = null
+      }, 2000)
     })
 
     this.socket.on('data', (data) => {
@@ -45,6 +63,16 @@ export class HubClient {
       this.buffer = remainder
 
       for (const msg of messages) {
+        // Handle hub ack of our register
+        if (msg.type === 'ack') {
+          if (this.ackTimer) {
+            clearTimeout(this.ackTimer)
+            this.ackTimer = null
+          }
+          this.diag('register ack received from hub')
+          continue
+        }
+
         // Handle history responses via promise resolver
         if (msg.type === 'history_response' && msg.channel_id) {
           const resolver = this.historyResolvers.get(msg.channel_id)
@@ -64,15 +92,23 @@ export class HubClient {
     this.socket.on('close', () => {
       this.connected = false
       this.socket = null
-      process.stderr.write('[Bridge] Disconnected from hub, reconnecting in 3s...\n')
+      if (this.ackTimer) {
+        clearTimeout(this.ackTimer)
+        this.ackTimer = null
+      }
+      this.diag('disconnected from hub, reconnecting in 3s...')
       this.scheduleReconnect()
     })
 
     this.socket.on('error', (err) => {
-      process.stderr.write(`[Bridge] Socket error: ${err.message}\n`)
+      this.diag(`socket error: ${err.message}`)
       this.connected = false
       this.socket?.destroy()
       this.socket = null
+      if (this.ackTimer) {
+        clearTimeout(this.ackTimer)
+        this.ackTimer = null
+      }
       this.scheduleReconnect()
     })
   }
