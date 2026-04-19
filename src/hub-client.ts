@@ -6,11 +6,21 @@ type MessageHandler = (msg: HubMessage) => void
 
 type HistoryEntry = { author_name: string; author_type: string; content: string; created_at: string }
 
+export type SubscriptionsChangedHandler = (ids: string[], names: string[]) => void
+
+// Periodic refresh cadence — KTK-183. Mid-session subscription changes
+// (e.g. scout leases) land in D1 + Hub's local cache, but the bridge's
+// own channelIds is otherwise set once at `register` time. Poll to catch
+// up without needing a session restart.
+const SUBSCRIPTIONS_REFRESH_INTERVAL_MS = 30_000
+
 export class HubClient {
   private socket: net.Socket | null = null
   private buffer = ''
   private handlers: MessageHandler[] = []
+  private subscriptionsHandlers: SubscriptionsChangedHandler[] = []
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private refreshTimer: ReturnType<typeof setInterval> | null = null
   private connected = false
   private historyResolvers = new Map<string, (entries: HistoryEntry[]) => void>()
   private connectAttempt = 0
@@ -55,6 +65,8 @@ export class HubClient {
         this.diag('WARNING: no ack from hub within 2s of register — hub may not be processing us')
         this.ackTimer = null
       }, 2000)
+
+      this.startSubscriptionsRefresh()
     })
 
     this.socket.on('data', (data) => {
@@ -83,6 +95,11 @@ export class HubClient {
           continue
         }
 
+        if (msg.type === 'subscriptions_response') {
+          this.applySubscriptions(msg.channel_ids ?? [], msg.channel_names ?? [])
+          continue
+        }
+
         for (const handler of this.handlers) {
           handler(msg)
         }
@@ -96,6 +113,7 @@ export class HubClient {
         clearTimeout(this.ackTimer)
         this.ackTimer = null
       }
+      this.stopSubscriptionsRefresh()
       this.diag('disconnected from hub, reconnecting in 3s...')
       this.scheduleReconnect()
     })
@@ -109,6 +127,7 @@ export class HubClient {
         clearTimeout(this.ackTimer)
         this.ackTimer = null
       }
+      this.stopSubscriptionsRefresh()
       this.scheduleReconnect()
     })
   }
@@ -123,6 +142,60 @@ export class HubClient {
 
   onMessage(handler: MessageHandler): void {
     this.handlers.push(handler)
+  }
+
+  /**
+   * Subscribe to mid-session subscription changes. Fires with the new
+   * channel_ids + channel_names after any refresh that produces a diff,
+   * so the caller can update derived state (e.g. the MCP `channel_list`
+   * tool output).
+   */
+  onSubscriptionsChanged(handler: SubscriptionsChangedHandler): void {
+    this.subscriptionsHandlers.push(handler)
+  }
+
+  private startSubscriptionsRefresh(): void {
+    this.stopSubscriptionsRefresh()
+    this.refreshTimer = setInterval(() => {
+      this.requestSubscriptions()
+    }, SUBSCRIPTIONS_REFRESH_INTERVAL_MS)
+  }
+
+  private stopSubscriptionsRefresh(): void {
+    if (!this.refreshTimer) return
+    clearInterval(this.refreshTimer)
+    this.refreshTimer = null
+  }
+
+  private requestSubscriptions(): void {
+    if (!this.socket || !this.connected) return
+    this.socket.write(
+      encodeMessage({ type: 'subscriptions_request', agent_id: this.agentId }),
+    )
+  }
+
+  private applySubscriptions(nextIds: string[], nextNames: string[]): void {
+    const current = new Set(this.channelIds)
+    const incoming = new Set(nextIds)
+
+    const added = nextIds.filter((id) => !current.has(id))
+    const removed = this.channelIds.filter((id) => !incoming.has(id))
+
+    if (added.length === 0 && removed.length === 0) return
+
+    // Emit subscribe/unsubscribe frames so Hub updates its routing state.
+    for (const id of added) {
+      this.socket?.write(encodeMessage({ type: 'subscribe', channel_id: id, agent_id: this.agentId }))
+    }
+    for (const id of removed) {
+      this.socket?.write(encodeMessage({ type: 'unsubscribe', channel_id: id, agent_id: this.agentId }))
+    }
+
+    this.channelIds = nextIds
+    for (const handler of this.subscriptionsHandlers) {
+      handler(nextIds, nextNames)
+    }
+    this.diag(`subscriptions refreshed: +${added.length} -${removed.length} (total ${nextIds.length})`)
   }
 
   sendMessage(channelId: string, content: string): void {
@@ -188,6 +261,7 @@ export class HubClient {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    this.stopSubscriptionsRefresh()
     if (this.socket) {
       this.socket.destroy()
       this.socket = null

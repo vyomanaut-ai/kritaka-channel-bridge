@@ -1,7 +1,7 @@
 // Hub <-> Bridge wire protocol (newline-delimited JSON over TCP)
 
 export interface HubMessage {
-  type: 'channel_message' | 'subscribe' | 'unsubscribe' | 'register' | 'ack' | 'history_request' | 'history_response' | 'reaction_add' | 'reaction_remove' | 'reaction_event'
+  type: 'channel_message' | 'subscribe' | 'unsubscribe' | 'register' | 'ack' | 'history_request' | 'history_response' | 'reaction_add' | 'reaction_remove' | 'reaction_event' | 'subscriptions_request' | 'subscriptions_response'
   channel_id?: string
   agent_id?: string
   agent_name?: string
@@ -13,8 +13,10 @@ export interface HubMessage {
   metadata?: Record<string, string>
   seq?: number
   timestamp?: string
-  // For register: list of channel IDs this agent subscribes to
+  // For register + subscriptions_response: channel IDs this agent subscribes to
   channel_ids?: string[]
+  // For subscriptions_response: parallel to channel_ids, human-readable names
+  channel_names?: string[]
   // For history_request
   limit?: number
   // For history_response
