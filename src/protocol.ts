@@ -1,7 +1,32 @@
 // Hub <-> Bridge wire protocol (newline-delimited JSON over TCP)
 
+// KTK-191: Decision question/choice payloads carried over the bridge ↔ hub
+// wire. The bridge mints stable q*/c* ids before sending so the hub doesn't
+// have to round-trip them.
+export interface DecisionQuestionFrame {
+  id: string
+  prompt: string
+  choices: Array<{ id: string; label: string }>
+}
+
 export interface HubMessage {
-  type: 'channel_message' | 'subscribe' | 'unsubscribe' | 'register' | 'ack' | 'history_request' | 'history_response' | 'reaction_add' | 'reaction_remove' | 'reaction_event' | 'subscriptions_request' | 'subscriptions_response'
+  type:
+    | 'channel_message'
+    | 'subscribe'
+    | 'unsubscribe'
+    | 'register'
+    | 'ack'
+    | 'history_request'
+    | 'history_response'
+    | 'reaction_add'
+    | 'reaction_remove'
+    | 'reaction_event'
+    | 'subscriptions_request'
+    | 'subscriptions_response'
+    | 'decision_create_request'
+    | 'decision_create_response'
+    | 'decision_cancel_request'
+    | 'decision_cancel_response'
   channel_id?: string
   agent_id?: string
   agent_name?: string
@@ -29,6 +54,12 @@ export interface HubMessage {
   // For reaction_add, reaction_remove, reaction_event
   emoji?: string
   action?: 'add' | 'remove'
+  // For decision_* request/response. req_id pairs request to response so the
+  // bridge can resolve the awaiting Promise.
+  req_id?: string
+  decision_id?: string
+  questions?: DecisionQuestionFrame[]
+  error?: string
 }
 
 export const HUB_PORT = 19850

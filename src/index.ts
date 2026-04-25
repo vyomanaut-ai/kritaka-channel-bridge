@@ -48,6 +48,12 @@ function writeImageToTempFile(dataUri: string): string | null {
 const AGENT_ID = process.env.KRITAKA_AGENT_ID ?? 'unknown'
 const AGENT_NAME = process.env.KRITAKA_AGENT_NAME ?? 'unknown'
 const HUB_PORT = parseInt(process.env.KRITAKA_HUB_PORT ?? '19850', 10)
+// KTK-190: Workspace identity injected by the daemon at spawn so the agent
+// recognizes how the human signs herself in chat. Empty strings mean the
+// workspace owner hasn't set them yet.
+const WORKSPACE_NAME = process.env.KRITAKA_WORKSPACE_NAME ?? ''
+const WORKSPACE_HANDLE = process.env.KRITAKA_WORKSPACE_HANDLE ?? ''
+const WORKSPACE_DISPLAY_NAME = process.env.KRITAKA_WORKSPACE_DISPLAY_NAME ?? ''
 // Mutable: seeded from env at startup, refreshed mid-session by
 // HubClient.onSubscriptionsChanged so channel_list + channel_history
 // reflect D1 truth without a process restart (KTK-183).
@@ -59,11 +65,24 @@ const channelList = subscriptions.length > 0
   ? `Subscribed channels:\n${subscriptions.map((id, i) => `  ${id} — #${channelNames[i] ?? id}`).join('\n')}`
   : 'No channel subscriptions configured.'
 
+const workspaceIdentity = (() => {
+  if (!WORKSPACE_HANDLE && !WORKSPACE_DISPLAY_NAME) return ''
+  const display = WORKSPACE_DISPLAY_NAME || WORKSPACE_HANDLE
+  const handleLine = WORKSPACE_HANDLE
+    ? `The human you collaborate with is ${display} — they sign messages with the handle @${WORKSPACE_HANDLE}. When you see @${WORKSPACE_HANDLE} addressed to you in a channel, treat it as a direct message from them.`
+    : `The human you collaborate with is ${display}.`
+  const wsLine = WORKSPACE_NAME ? `Workspace: ${WORKSPACE_NAME}.` : ''
+  return `${wsLine}\n${handleLine}\n`
+})()
+
+const decisionGuidance = `If you need a judgement call, scope/UX choice, approval, or any answer you are stuck on, prefer the decision_create tool over asking inline in the channel — it surfaces the question in the user's decision sidebar where it won't get lost in cross-agent chatter. The answered card echoes back into the channel and @-mentions you when complete.`
+
 const instructions = `You are connected to Kritaka, a multi-agent orchestration platform.
-Messages from other agents and humans arrive as <channel source="kritaka" channel_id="..." author="..." author_type="...">content</channel> tags.
+${workspaceIdentity}Messages from other agents and humans arrive as <channel source="kritaka" channel_id="..." author="..." author_type="...">content</channel> tags.
 ${channelList}
 To reply to a channel, use the channel_reply tool with the channel_id and your message.
 To react to a message, use the channel_react tool with the message_id, channel_id, and an emoji.
+${decisionGuidance}
 Always be collaborative and responsive to messages from your team.`
 
 // Create the MCP server
@@ -132,6 +151,91 @@ mcp.registerTool(
     }
     hubClient.sendReaction(channel_id, message_id, emoji, action)
     return { content: [{ type: 'text' as const, text: `Reaction ${action === 'remove' ? 'removed from' : 'added to'} message ${message_id}` }] }
+  },
+)
+
+// KTK-191: Agents create Decisions instead of asking judgement-call questions
+// inline in the channel. The Kritaka UI queues them in the right-hand sidebar
+// and echoes the answered card back to the channel with @-mention so the
+// originating agent picks it up via the existing notification path.
+mcp.registerTool(
+  'decision_create',
+  {
+    description:
+      "Ask the user to make a decision via Kritaka's decision UI instead of " +
+      'a chat message. Use this whenever you need a judgement call, scope/UX ' +
+      'choice, approval, or any answer you are stuck on. Each question becomes ' +
+      'a multiple-choice card with an "Other" free-text fallback. Returns a ' +
+      'decision_id; the answered result echoes back into the channel as a ' +
+      'system message that @-mentions you, so you will be notified when it ' +
+      'completes via the normal channel notification flow.',
+    inputSchema: {
+      channel_id: z
+        .string()
+        .describe('The channel where the answered decision will echo (typically the channel you are in)'),
+      questions: z
+        .array(
+          z.object({
+            prompt: z
+              .string()
+              .describe('Succinct question — at most a paragraph, ideally one or two sentences'),
+            choices: z
+              .array(z.string())
+              .min(1)
+              .describe('Multiple-choice options. "Other" with a free-text input is added automatically.'),
+          }),
+        )
+        .min(1)
+        .describe('One or more questions to ask. Keep the set tight — fewer, sharper questions are better.'),
+    },
+  },
+  async ({ channel_id, questions }) => {
+    if (!hubClient?.isConnected()) {
+      return { content: [{ type: 'text' as const, text: 'Error: Not connected to Kritaka hub' }] }
+    }
+    // Mint stable q*/c* ids client-side so the daemon doesn't have to.
+    const framed = questions.map((q, qi) => ({
+      id: `q${qi + 1}`,
+      prompt: q.prompt,
+      choices: q.choices.map((label, ci) => ({ id: `c${ci + 1}`, label })),
+    }))
+    try {
+      const { decision_id } = await hubClient.createDecision(channel_id, framed)
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Decision created (id: ${decision_id}). The user will see it in their decision sidebar; you will receive a channel @-mention when it is answered.`,
+          },
+        ],
+      }
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] }
+    }
+  },
+)
+
+mcp.registerTool(
+  'decision_cancel',
+  {
+    description:
+      'Cancel a pending decision you previously created with decision_create. ' +
+      'Use this when the question has become moot (e.g. the user answered it ' +
+      'in chat, the situation changed, or you no longer need the decision).',
+    inputSchema: {
+      decision_id: z.string().describe('The decision id returned by decision_create'),
+    },
+  },
+  async ({ decision_id }) => {
+    if (!hubClient?.isConnected()) {
+      return { content: [{ type: 'text' as const, text: 'Error: Not connected to Kritaka hub' }] }
+    }
+    try {
+      await hubClient.cancelDecision(decision_id)
+      return { content: [{ type: 'text' as const, text: `Decision ${decision_id} cancelled.` }] }
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }] }
+    }
   },
 )
 

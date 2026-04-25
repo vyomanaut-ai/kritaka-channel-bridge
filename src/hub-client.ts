@@ -1,6 +1,7 @@
 import * as net from 'net'
+import { randomUUID } from 'crypto'
 import { encodeMessage, parseMessages } from './protocol.js'
-import type { HubMessage } from './protocol.js'
+import type { HubMessage, DecisionQuestionFrame } from './protocol.js'
 
 type MessageHandler = (msg: HubMessage) => void
 
@@ -23,6 +24,12 @@ export class HubClient {
   private refreshTimer: ReturnType<typeof setInterval> | null = null
   private connected = false
   private historyResolvers = new Map<string, (entries: HistoryEntry[]) => void>()
+  // KTK-191: in-flight decision RPCs keyed by req_id. Resolves with a
+  // typed result on response or rejects on `error` / timeout.
+  private decisionResolvers = new Map<
+    string,
+    { resolve: (value: { decision_id?: string; ok?: boolean }) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >()
   private connectAttempt = 0
   private ackTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -97,6 +104,25 @@ export class HubClient {
 
         if (msg.type === 'subscriptions_response') {
           this.applySubscriptions(msg.channel_ids ?? [], msg.channel_names ?? [])
+          continue
+        }
+
+        if (
+          (msg.type === 'decision_create_response' || msg.type === 'decision_cancel_response') &&
+          msg.req_id
+        ) {
+          const pending = this.decisionResolvers.get(msg.req_id)
+          if (pending) {
+            this.decisionResolvers.delete(msg.req_id)
+            clearTimeout(pending.timer)
+            if (msg.error) {
+              pending.reject(new Error(msg.error))
+            } else if (msg.type === 'decision_create_response') {
+              pending.resolve({ decision_id: msg.decision_id })
+            } else {
+              pending.resolve({ ok: true })
+            }
+          }
           continue
         }
 
@@ -247,6 +273,61 @@ export class HubClient {
           type: 'history_request',
           channel_id: channelId,
           limit,
+        }),
+      )
+    })
+  }
+
+  // KTK-191: Ask the daemon to create a Decision. The daemon POSTs to Hub
+  // REST and responds with the new decision id. Times out at 10s.
+  createDecision(channelId: string, questions: DecisionQuestionFrame[]): Promise<{ decision_id: string }> {
+    if (!this.socket || !this.connected) {
+      return Promise.reject(new Error('Not connected to Kritaka hub'))
+    }
+    const reqId = randomUUID()
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.decisionResolvers.delete(reqId)
+        reject(new Error('decision_create timed out after 10s'))
+      }, 10_000)
+      this.decisionResolvers.set(reqId, {
+        resolve: (v) => resolve({ decision_id: v.decision_id! }),
+        reject,
+        timer,
+      })
+      this.socket!.write(
+        encodeMessage({
+          type: 'decision_create_request',
+          req_id: reqId,
+          channel_id: channelId,
+          agent_id: this.agentId,
+          questions,
+        }),
+      )
+    })
+  }
+
+  cancelDecision(decisionId: string): Promise<{ ok: boolean }> {
+    if (!this.socket || !this.connected) {
+      return Promise.reject(new Error('Not connected to Kritaka hub'))
+    }
+    const reqId = randomUUID()
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.decisionResolvers.delete(reqId)
+        reject(new Error('decision_cancel timed out after 10s'))
+      }, 10_000)
+      this.decisionResolvers.set(reqId, {
+        resolve: () => resolve({ ok: true }),
+        reject,
+        timer,
+      })
+      this.socket!.write(
+        encodeMessage({
+          type: 'decision_cancel_request',
+          req_id: reqId,
+          decision_id: decisionId,
+          agent_id: this.agentId,
         }),
       )
     })
