@@ -30,6 +30,13 @@ export class HubClient {
     string,
     { resolve: (value: { decision_id?: string; ok?: boolean }) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
   >()
+  // KTK-199: in-flight reaction RPCs keyed by req_id. The daemon round-trips
+  // a `reaction_ack` after persisting so the MCP tool can return real status
+  // instead of lying with a hardcoded success string.
+  private reactionResolvers = new Map<
+    string,
+    { resolve: () => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >()
   private connectAttempt = 0
   private ackTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -104,6 +111,17 @@ export class HubClient {
 
         if (msg.type === 'subscriptions_response') {
           this.applySubscriptions(msg.channel_ids ?? [], msg.channel_names ?? [])
+          continue
+        }
+
+        if (msg.type === 'reaction_ack' && msg.req_id) {
+          const pending = this.reactionResolvers.get(msg.req_id)
+          if (pending) {
+            this.reactionResolvers.delete(msg.req_id)
+            clearTimeout(pending.timer)
+            if (msg.error) pending.reject(new Error(msg.error))
+            else pending.resolve()
+          }
           continue
         }
 
@@ -238,19 +256,35 @@ export class HubClient {
     )
   }
 
-  sendReaction(channelId: string, messageId: string, emoji: string, action: 'add' | 'remove'): void {
-    if (!this.socket || !this.connected) return
-    this.socket.write(
-      encodeMessage({
-        type: action === 'remove' ? 'reaction_remove' : 'reaction_add',
-        channel_id: channelId,
-        message_id: messageId,
-        emoji,
-        agent_id: this.agentId,
-        author_name: this.agentName,
-        author_type: 'agent',
-      }),
-    )
+  sendReaction(
+    channelId: string,
+    messageId: string,
+    emoji: string,
+    action: 'add' | 'remove',
+  ): Promise<void> {
+    if (!this.socket || !this.connected) {
+      return Promise.reject(new Error('Not connected to Kritaka hub'))
+    }
+    const reqId = randomUUID()
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.reactionResolvers.delete(reqId)
+        reject(new Error(`reaction ${action} timed out after 5s — daemon did not ack`))
+      }, 5_000)
+      this.reactionResolvers.set(reqId, { resolve, reject, timer })
+      this.socket!.write(
+        encodeMessage({
+          type: action === 'remove' ? 'reaction_remove' : 'reaction_add',
+          req_id: reqId,
+          channel_id: channelId,
+          message_id: messageId,
+          emoji,
+          agent_id: this.agentId,
+          author_name: this.agentName,
+          author_type: 'agent',
+        }),
+      )
+    })
   }
 
   requestHistory(channelId: string, limit: number): Promise<HistoryEntry[]> {

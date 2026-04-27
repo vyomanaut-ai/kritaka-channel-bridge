@@ -149,8 +149,26 @@ mcp.registerTool(
     if (!hubClient?.isConnected()) {
       return { content: [{ type: 'text' as const, text: 'Error: Not connected to Kritaka hub' }] }
     }
-    hubClient.sendReaction(channel_id, message_id, emoji, action)
-    return { content: [{ type: 'text' as const, text: `Reaction ${action === 'remove' ? 'removed from' : 'added to'} message ${message_id}` }] }
+    try {
+      await hubClient.sendReaction(channel_id, message_id, emoji, action)
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Reaction ${action === 'remove' ? 'removed from' : 'added to'} message ${message_id}`,
+          },
+        ],
+      }
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+      }
+    }
   },
 )
 

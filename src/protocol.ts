@@ -21,6 +21,7 @@ export interface HubMessage {
     | 'reaction_add'
     | 'reaction_remove'
     | 'reaction_event'
+    | 'reaction_ack'
     | 'subscriptions_request'
     | 'subscriptions_response'
     | 'decision_create_request'
