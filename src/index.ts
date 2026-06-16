@@ -11,6 +11,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { pathToFileURL } from 'url'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
@@ -366,10 +367,18 @@ async function main() {
   await mcp.connect(new StdioServerTransport())
 }
 
-main().catch((err) => {
-  process.stderr.write(`[Bridge] Fatal error: ${err}\n`)
-  process.exit(1)
-})
+// KTK-328 — only start the MCP server + HubClient when this module is run as
+// the entrypoint (`node dist/index.js`), NOT when it is imported for its
+// protocol helpers / HubClient export. Previously `main()` ran unconditionally
+// on load, so importing the package main booted a second, identity-less
+// HubClient inside any importer (e.g. the pty-daemon), which then hot-looped
+// against the hub and filled the daemon's error log.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    process.stderr.write(`[Bridge] Fatal error: ${err}\n`)
+    process.exit(1)
+  })
+}
 
 // Re-export for library consumers
 export { HubClient } from './hub-client.js'

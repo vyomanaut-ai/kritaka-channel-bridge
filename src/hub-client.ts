@@ -21,6 +21,9 @@ export class HubClient {
   private handlers: MessageHandler[] = []
   private subscriptionsHandlers: SubscriptionsChangedHandler[] = []
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  // KTK-328 — consecutive failed reconnects, for capped exponential backoff.
+  // Reset to 0 once the hub acks our register (a genuine success).
+  private reconnectFailures = 0
   private refreshTimer: ReturnType<typeof setInterval> | null = null
   private connected = false
   private historyResolvers = new Map<string, (entries: HistoryEntry[]) => void>()
@@ -103,6 +106,9 @@ export class HubClient {
             clearTimeout(this.ackTimer)
             this.ackTimer = null
           }
+          // KTK-328 — genuine success: reset the reconnect backoff so a
+          // healthy bridge that briefly drops reconnects promptly.
+          this.reconnectFailures = 0
           this.diag('register ack received from hub')
           continue
         }
@@ -166,7 +172,7 @@ export class HubClient {
         this.ackTimer = null
       }
       this.stopSubscriptionsRefresh()
-      this.diag('disconnected from hub, reconnecting in 3s...')
+      this.diag('disconnected from hub')
       this.scheduleReconnect()
     })
 
@@ -186,10 +192,20 @@ export class HubClient {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return
+    // KTK-328 — capped exponential backoff with jitter. A flat 3s retry meant
+    // a permanently-rejected client (e.g. one missing a workspace identity)
+    // hammered the hub ~20×/min forever. Back off 3s → 6s → 12s … capped at
+    // 60s; `reconnectFailures` resets to 0 on a successful register ack.
+    const BASE_MS = 3_000
+    const MAX_MS = 60_000
+    const delay = Math.min(BASE_MS * 2 ** this.reconnectFailures, MAX_MS)
+    const wait = delay + Math.floor(Math.random() * 1_000)
+    this.reconnectFailures += 1
+    this.diag(`reconnecting in ${Math.round(wait / 1_000)}s (failure #${this.reconnectFailures})`)
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.connect()
-    }, 3000)
+    }, wait)
   }
 
   onMessage(handler: MessageHandler): void {
