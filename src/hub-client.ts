@@ -49,6 +49,12 @@ export class HubClient {
     private agentId: string,
     private agentName: string,
     private channelIds: string[],
+    // KTK-324 — agent's workspace, forwarded to the daemon's channel-hub
+    // at register so every hub-call (channel_message, reaction, decision)
+    // is routed under the agent's own workspace, not the daemon's identity.
+    // Optional only for backwards-compat with old test harnesses; in
+    // production it is always set from `KRITAKA_WORKSPACE_ID`.
+    private workspaceId?: string,
   ) {}
 
   connect(): void {
@@ -69,6 +75,8 @@ export class HubClient {
           agent_id: this.agentId,
           agent_name: this.agentName,
           channel_ids: this.channelIds,
+          // KTK-324 — agent's workspace, routed per-call in the daemon.
+          workspace_id: this.workspaceId,
         }),
       )
       this.diag(`register write returned ${registerWritten} (false = buffered due to backpressure)`)

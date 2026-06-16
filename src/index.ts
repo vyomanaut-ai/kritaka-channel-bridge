@@ -54,6 +54,10 @@ const HUB_PORT = parseInt(process.env.KRITAKA_HUB_PORT ?? '19850', 10)
 const WORKSPACE_NAME = process.env.KRITAKA_WORKSPACE_NAME ?? ''
 const WORKSPACE_HANDLE = process.env.KRITAKA_WORKSPACE_HANDLE ?? ''
 const WORKSPACE_DISPLAY_NAME = process.env.KRITAKA_WORKSPACE_DISPLAY_NAME ?? ''
+// KTK-324 — the agent's workspace id, forwarded to the daemon's
+// channel-hub at register so per-call routing uses the agent's workspace
+// instead of the daemon's identity.
+const WORKSPACE_ID = process.env.KRITAKA_WORKSPACE_ID ?? ''
 // Mutable: seeded from env at startup, refreshed mid-session by
 // HubClient.onSubscriptionsChanged so channel_list + channel_history
 // reflect D1 truth without a process restart (KTK-183).
@@ -286,7 +290,7 @@ mcp.registerTool(
 
 // Connect to Hub and Claude Code
 async function main() {
-  hubClient = new HubClient(HUB_PORT, AGENT_ID, AGENT_NAME, subscriptions)
+  hubClient = new HubClient(HUB_PORT, AGENT_ID, AGENT_NAME, subscriptions, WORKSPACE_ID)
 
   // Mid-session subscription updates — HubClient polls + emits subscribe /
   // unsubscribe frames to Hub; we just update the arrays that back the

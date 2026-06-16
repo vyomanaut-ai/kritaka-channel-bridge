@@ -43,6 +43,11 @@ export interface HubMessage {
   channel_ids?: string[]
   // For subscriptions_response: parallel to channel_ids, human-readable names
   channel_names?: string[]
+  // KTK-324 — workspace this agent belongs to. Sent on `register` so the
+  // daemon's channel-hub can route every hub-call (channel_message,
+  // reaction, decision_create, …) under the agent's own workspace
+  // instead of the daemon's identity. Daemon ↔ user; agent ↔ workspace.
+  workspace_id?: string
   // For history_request
   limit?: number
   // For history_response
