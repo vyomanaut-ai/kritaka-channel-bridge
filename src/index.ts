@@ -87,6 +87,7 @@ ${workspaceIdentity}Messages from other agents and humans arrive as <channel sou
 ${channelList}
 To reply to a channel, use the channel_reply tool with the channel_id and your message.
 To react to a message, use the channel_react tool with the message_id, channel_id, and an emoji.
+Threads keep a long back-and-forth out of the main channel feed, so the channel stays readable while several people work in parallel. If an inbound tag carries a thread_id, you are being spoken to inside a thread — pass that same thread_id to channel_reply so your answer lands there and not in the main feed. When a topic of your own is going to take several messages, open a thread for it with channel_thread_create and reply into that.
 ${decisionGuidance}
 Always be collaborative and responsive to messages from your team.`
 
@@ -111,14 +112,75 @@ mcp.registerTool(
     inputSchema: {
       channel_id: z.string().describe('The channel ID to post to (from the channel_id attribute on inbound messages)'),
       message: z.string().describe('The message to send'),
+      // KTK-385 — spelled out rather than left to inference: the failure
+      // mode is an agent answering a threaded question in the parent
+      // channel, which is the exact crosstalk threads exist to remove.
+      thread_id: z
+        .string()
+        .optional()
+        .describe(
+          'Optional thread to reply inside. Pass the thread_id from the message you are responding to — if an inbound <channel> tag carried a thread_id, reply with that same value. Omit it to post to the main channel feed.',
+        ),
     },
   },
-  async ({ channel_id, message }) => {
+  async ({ channel_id, message, thread_id }) => {
     if (!hubClient?.isConnected()) {
       return { content: [{ type: 'text' as const, text: 'Error: Not connected to Kritaka hub' }] }
     }
-    hubClient.sendMessage(channel_id, message)
-    return { content: [{ type: 'text' as const, text: `Message sent to channel ${channel_id}` }] }
+    hubClient.sendMessage(channel_id, message, thread_id)
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: thread_id
+            ? `Message sent to thread ${thread_id} in channel ${channel_id}`
+            : `Message sent to channel ${channel_id}`,
+        },
+      ],
+    }
+  },
+)
+
+// KTK-385 — agents start threads, they don't only answer in them. Without
+// this an agent working a task can't move its own sub-conversation out of
+// the main feed, and the crosstalk Akari asked us to fix stays where it is.
+mcp.registerTool(
+  'channel_thread_create',
+  {
+    description:
+      'Start a thread on an existing Kritaka message. Use this when a topic is going to take several ' +
+      'messages to work through — it keeps that back-and-forth out of the main channel feed so the ' +
+      'channel stays readable. Returns the thread_id to pass to channel_reply.',
+    inputSchema: {
+      channel_id: z.string().describe('The channel the message is in'),
+      message_id: z.string().describe('The message to hang the thread off (from the message_id on inbound messages)'),
+      title: z.string().describe('Short name for the thread, describing the topic (max 100 characters)'),
+    },
+  },
+  async ({ channel_id, message_id, title }) => {
+    if (!hubClient?.isConnected()) {
+      return { content: [{ type: 'text' as const, text: 'Error: Not connected to Kritaka hub' }] }
+    }
+    try {
+      const { thread_id } = await hubClient.createThread(channel_id, message_id, title)
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Thread "${title}" created (thread_id: ${thread_id}). Reply into it by passing thread_id to channel_reply.`,
+          },
+        ],
+      }
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+      }
+    }
   },
 )
 
@@ -265,18 +327,26 @@ mcp.registerTool(
 mcp.registerTool(
   'channel_history',
   {
-    description: 'Get recent message history from a Kritaka channel.',
+    description: 'Get recent message history from a Kritaka channel, or from one thread inside it.',
     inputSchema: {
       channel_id: z.string().describe('The channel ID to get history for'),
       limit: z.number().optional().describe('Maximum number of messages to return (default: 50)'),
+      // KTK-385 — without this, catching up on a thread means reading the
+      // whole channel, which is the readability problem in reverse.
+      thread_id: z
+        .string()
+        .optional()
+        .describe(
+          "Optional thread to read instead of the channel. Omit for the channel's main feed, which excludes thread replies.",
+        ),
     },
   },
-  async ({ channel_id, limit }) => {
+  async ({ channel_id, limit, thread_id }) => {
     if (!hubClient?.isConnected()) {
       return { content: [{ type: 'text' as const, text: 'Error: Not connected to Kritaka hub' }] }
     }
 
-    const history = await hubClient.requestHistory(channel_id, limit ?? 50)
+    const history = await hubClient.requestHistory(channel_id, limit ?? 50, thread_id)
     if (!history || history.length === 0) {
       return { content: [{ type: 'text' as const, text: 'No messages in this channel yet.' }] }
     }

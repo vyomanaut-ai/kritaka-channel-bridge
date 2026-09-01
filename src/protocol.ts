@@ -28,6 +28,8 @@ export interface HubMessage {
     | 'decision_create_response'
     | 'decision_cancel_request'
     | 'decision_cancel_response'
+    | 'thread_create_request'
+    | 'thread_create_response'
   channel_id?: string
   agent_id?: string
   agent_name?: string
@@ -65,6 +67,12 @@ export interface HubMessage {
   req_id?: string
   decision_id?: string
   questions?: DecisionQuestionFrame[]
+  // KTK-385 — thread identity. Present on inbound `channel_message` when
+  // the message was posted inside a thread, and on outbound
+  // `channel_message` to target one. Absent/undefined means the parent
+  // channel feed, so every pre-thread frame keeps its exact meaning.
+  thread_id?: string
+  thread_title?: string
   error?: string
 }
 
