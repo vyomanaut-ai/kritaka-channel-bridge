@@ -406,6 +406,12 @@ async function main() {
             author_id: msg.author_id ?? '',
             message_id: msg.message_id ?? '',
             timestamp: msg.timestamp ?? '',
+            // KTK-385 — thread identity rides `meta`, which is what
+            // becomes the `<channel …>` tag's attributes. Only emitted
+            // when the message is actually in a thread, so a parent-feed
+            // message produces the same tag it always has.
+            ...(msg.thread_id ? { thread_id: msg.thread_id } : {}),
+            ...(msg.thread_title ? { thread_title: msg.thread_title } : {}),
             ...(imageRef ? { image_path: imageRef } : {}),
           },
         },
