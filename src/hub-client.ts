@@ -40,6 +40,22 @@ export class HubClient {
     string,
     { resolve: () => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
   >()
+  // KTK-385: in-flight thread-create RPCs keyed by req_id. Same shape as
+  // the decision RPCs — the agent needs a real thread id back, since a
+  // thread it can't address is a thread it can't reply into.
+  private threadResolvers = new Map<
+    string,
+    { resolve: (value: { thread_id: string }) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >()
+  // KTK-385: in-flight thread-list RPCs keyed by req_id.
+  private threadListResolvers = new Map<
+    string,
+    {
+      resolve: (value: NonNullable<HubMessage['threads']>) => void
+      reject: (err: Error) => void
+      timer: ReturnType<typeof setTimeout>
+    }
+  >()
   private connectAttempt = 0
   private ackTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -158,6 +174,33 @@ export class HubClient {
           continue
         }
 
+        if (msg.type === 'threads_list_response' && msg.req_id) {
+          const pending = this.threadListResolvers.get(msg.req_id)
+          if (pending) {
+            this.threadListResolvers.delete(msg.req_id)
+            clearTimeout(pending.timer)
+            if (msg.error) pending.reject(new Error(msg.error))
+            else pending.resolve(msg.threads ?? [])
+          }
+          continue
+        }
+
+        // KTK-385 — thread_create round-trip. Rejecting on `error` is the
+        // point: an agent that opens a thread and gets a fabricated id
+        // back would then post every reply into a thread that doesn't
+        // exist, and the Hub would 404 each one silently.
+        if (msg.type === 'thread_create_response' && msg.req_id) {
+          const pending = this.threadResolvers.get(msg.req_id)
+          if (pending) {
+            this.threadResolvers.delete(msg.req_id)
+            clearTimeout(pending.timer)
+            if (msg.error) pending.reject(new Error(msg.error))
+            else if (msg.thread_id) pending.resolve({ thread_id: msg.thread_id })
+            else pending.reject(new Error('daemon returned no thread_id'))
+          }
+          continue
+        }
+
         for (const handler of this.handlers) {
           handler(msg)
         }
@@ -266,7 +309,9 @@ export class HubClient {
     this.diag(`subscriptions refreshed: +${added.length} -${removed.length} (total ${nextIds.length})`)
   }
 
-  sendMessage(channelId: string, content: string): void {
+  // KTK-385 — `threadId` targets a thread inside the channel. Omitted
+  // means the parent feed, which is the pre-thread wire shape exactly.
+  sendMessage(channelId: string, content: string, threadId?: string): void {
     if (!this.socket || !this.connected) return
     this.socket.write(
       encodeMessage({
@@ -276,8 +321,41 @@ export class HubClient {
         agent_id: this.agentId,
         author_name: this.agentName,
         author_type: 'agent',
+        ...(threadId ? { thread_id: threadId } : {}),
       }),
     )
+  }
+
+  // KTK-385 — ask the daemon to open a thread on an existing message. The
+  // daemon POSTs to Hub REST and answers with the new thread id, so the
+  // agent gets a real id (or a real error) rather than the fire-and-forget
+  // "sent" that `sendMessage` returns.
+  createThread(
+    channelId: string,
+    messageId: string,
+    title: string,
+  ): Promise<{ thread_id: string }> {
+    if (!this.socket || !this.connected) {
+      return Promise.reject(new Error('Not connected to Kritaka hub'))
+    }
+    const reqId = randomUUID()
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.threadResolvers.delete(reqId)
+        reject(new Error('channel_thread_create timed out after 10s'))
+      }, 10_000)
+      this.threadResolvers.set(reqId, { resolve, reject, timer })
+      this.socket!.write(
+        encodeMessage({
+          type: 'thread_create_request',
+          req_id: reqId,
+          channel_id: channelId,
+          message_id: messageId,
+          content: title,
+          agent_id: this.agentId,
+        }),
+      )
+    })
   }
 
   sendReaction(
@@ -311,7 +389,7 @@ export class HubClient {
     })
   }
 
-  requestHistory(channelId: string, limit: number): Promise<HistoryEntry[]> {
+  requestHistory(channelId: string, limit: number, threadId?: string): Promise<HistoryEntry[]> {
     if (!this.socket || !this.connected) return Promise.resolve([])
 
     return new Promise((resolve) => {
@@ -331,6 +409,11 @@ export class HubClient {
           type: 'history_request',
           channel_id: channelId,
           limit,
+          // KTK-385 — the daemon reads the thread's history endpoint when
+          // this is present. Resolvers stay keyed by channel_id: a thread
+          // belongs to exactly one channel, and two concurrent history
+          // reads on the same channel already collided before threads.
+          ...(threadId ? { thread_id: threadId } : {}),
         }),
       )
     })
@@ -385,6 +468,31 @@ export class HubClient {
           type: 'decision_cancel_request',
           req_id: reqId,
           decision_id: decisionId,
+          agent_id: this.agentId,
+        }),
+      )
+    })
+  }
+
+  // KTK-385 — list the channel's threads. Resolves with an empty array for
+  // "no threads", which is distinct from a rejection: an agent needs to be
+  // able to tell "nothing to join" from "I couldn't look".
+  listThreads(channelId: string): Promise<NonNullable<HubMessage['threads']>> {
+    if (!this.socket || !this.connected) {
+      return Promise.reject(new Error('Not connected to Kritaka hub'))
+    }
+    const reqId = randomUUID()
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.threadListResolvers.delete(reqId)
+        reject(new Error('channel_threads_list timed out after 10s'))
+      }, 10_000)
+      this.threadListResolvers.set(reqId, { resolve, reject, timer })
+      this.socket!.write(
+        encodeMessage({
+          type: 'threads_list_request',
+          req_id: reqId,
+          channel_id: channelId,
           agent_id: this.agentId,
         }),
       )
