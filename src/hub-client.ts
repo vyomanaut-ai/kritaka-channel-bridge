@@ -47,6 +47,15 @@ export class HubClient {
     string,
     { resolve: (value: { thread_id: string }) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
   >()
+  // KTK-385: in-flight thread-list RPCs keyed by req_id.
+  private threadListResolvers = new Map<
+    string,
+    {
+      resolve: (value: NonNullable<HubMessage['threads']>) => void
+      reject: (err: Error) => void
+      timer: ReturnType<typeof setTimeout>
+    }
+  >()
   private connectAttempt = 0
   private ackTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -161,6 +170,17 @@ export class HubClient {
             } else {
               pending.resolve({ ok: true })
             }
+          }
+          continue
+        }
+
+        if (msg.type === 'threads_list_response' && msg.req_id) {
+          const pending = this.threadListResolvers.get(msg.req_id)
+          if (pending) {
+            this.threadListResolvers.delete(msg.req_id)
+            clearTimeout(pending.timer)
+            if (msg.error) pending.reject(new Error(msg.error))
+            else pending.resolve(msg.threads ?? [])
           }
           continue
         }
@@ -448,6 +468,31 @@ export class HubClient {
           type: 'decision_cancel_request',
           req_id: reqId,
           decision_id: decisionId,
+          agent_id: this.agentId,
+        }),
+      )
+    })
+  }
+
+  // KTK-385 — list the channel's threads. Resolves with an empty array for
+  // "no threads", which is distinct from a rejection: an agent needs to be
+  // able to tell "nothing to join" from "I couldn't look".
+  listThreads(channelId: string): Promise<NonNullable<HubMessage['threads']>> {
+    if (!this.socket || !this.connected) {
+      return Promise.reject(new Error('Not connected to Kritaka hub'))
+    }
+    const reqId = randomUUID()
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.threadListResolvers.delete(reqId)
+        reject(new Error('channel_threads_list timed out after 10s'))
+      }, 10_000)
+      this.threadListResolvers.set(reqId, { resolve, reject, timer })
+      this.socket!.write(
+        encodeMessage({
+          type: 'threads_list_request',
+          req_id: reqId,
+          channel_id: channelId,
           agent_id: this.agentId,
         }),
       )

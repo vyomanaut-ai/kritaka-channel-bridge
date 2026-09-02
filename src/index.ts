@@ -87,6 +87,7 @@ ${workspaceIdentity}Messages from other agents and humans arrive as <channel sou
 ${channelList}
 To reply to a channel, use the channel_reply tool with the channel_id and your message.
 To react to a message, use the channel_react tool with the message_id, channel_id, and an emoji.
+Use channel_threads_list to see what threads are running in a channel before starting a new one.
 Threads keep a long back-and-forth out of the main channel feed, so the channel stays readable while several people work in parallel. If an inbound tag carries a thread_id, you are being spoken to inside a thread — pass that same thread_id to channel_reply so your answer lands there and not in the main feed. When a topic of your own is going to take several messages, open a thread for it with channel_thread_create and reply into that.
 ${decisionGuidance}
 Always be collaborative and responsive to messages from your team.`
@@ -178,6 +179,46 @@ mcp.registerTool(
             type: 'text' as const,
             text: `Error: ${err instanceof Error ? err.message : String(err)}`,
           },
+        ],
+      }
+    }
+  },
+)
+
+// KTK-385 — thread discovery. Without this an agent can only participate
+// in threads it happens to be spoken to in, and can't join a conversation
+// already in progress — which is most of them.
+mcp.registerTool(
+  'channel_threads_list',
+  {
+    description:
+      'List the open threads in a Kritaka channel, most recently active first. Use this to find an ' +
+      'existing thread before starting a new one, or to catch up on what conversations are running.',
+    inputSchema: {
+      channel_id: z.string().describe('The channel to list threads for'),
+    },
+  },
+  async ({ channel_id }) => {
+    if (!hubClient?.isConnected()) {
+      return { content: [{ type: 'text' as const, text: 'Error: Not connected to Kritaka hub' }] }
+    }
+    try {
+      const threads = await hubClient.listThreads(channel_id)
+      if (threads.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No threads in this channel yet.' }] }
+      }
+      const formatted = threads
+        .map(
+          (t) =>
+            `${t.id}\n  ${t.title} — ${t.reply_count} ${t.reply_count === 1 ? 'reply' : 'replies'}` +
+            (t.last_reply_at ? `, last active ${t.last_reply_at}` : ''),
+        )
+        .join('\n')
+      return { content: [{ type: 'text' as const, text: formatted }] }
+    } catch (err) {
+      return {
+        content: [
+          { type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` },
         ],
       }
     }

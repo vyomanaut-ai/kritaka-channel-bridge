@@ -30,6 +30,8 @@ export interface HubMessage {
     | 'decision_cancel_response'
     | 'thread_create_request'
     | 'thread_create_response'
+    | 'threads_list_request'
+    | 'threads_list_response'
   channel_id?: string
   agent_id?: string
   agent_name?: string
@@ -73,6 +75,16 @@ export interface HubMessage {
   // channel feed, so every pre-thread frame keeps its exact meaning.
   thread_id?: string
   thread_title?: string
+  // KTK-385 — thread discovery. An agent that can reply into a thread but
+  // can't find one is limited to threads it happens to be spoken to in,
+  // which leaves it unable to join a conversation already in progress.
+  threads?: Array<{
+    id: string
+    title: string
+    reply_count: number
+    last_reply_at: string | null
+    root_message_id: string
+  }>
   error?: string
 }
 
