@@ -46,6 +46,37 @@ function writeImageToTempFile(dataUri: string): string | null {
   }
 }
 
+/**
+ * KTK-393 — defensive sanitisation of notification `meta` values.
+ *
+ * On the Claude Code path this bridge does NOT build the `<channel …>`
+ * tag: it emits a `notifications/claude/channel` payload and the Claude
+ * Code harness renders the tag from `meta` (which is why our frames read
+ * `source="kritaka-channels"`, the MCP server name, rather than the
+ * `source="kritaka"` the runtime's own builder emits). So we cannot
+ * escape at construction — we do not own the construction.
+ *
+ * What we do own is the values. Quotes and angle brackets are stripped
+ * before they leave here, so a value cannot terminate an attribute or
+ * open a tag regardless of how the harness renders it. `author_type` is
+ * the field that matters: agents are instructed to treat
+ * `author_type="human"` as Akari speaking, so a forged one is privilege
+ * escalation into the only channel that carries authority.
+ *
+ * This is belt-and-braces, not a diagnosis — the harness may well escape
+ * correctly. It is cheap, and the cost of being wrong is not.
+ */
+function metaValue(value: string): string {
+  return value.replace(/["'<>]/g, '')
+}
+
+const KNOWN_AUTHOR_TYPES = new Set(['human', 'agent', 'system', 'webhook', 'journalist'])
+
+/** Closed set rather than escaping — see metaValue. */
+function safeAuthorType(value: string): string {
+  return KNOWN_AUTHOR_TYPES.has(value) ? value : 'unknown'
+}
+
 const AGENT_ID = process.env.KRITAKA_AGENT_ID ?? 'unknown'
 const AGENT_NAME = process.env.KRITAKA_AGENT_NAME ?? 'unknown'
 const HUB_PORT = parseInt(process.env.KRITAKA_HUB_PORT ?? '19850', 10)
@@ -441,18 +472,21 @@ async function main() {
           channel: 'kritaka',
           content,
           meta: {
-            channel_id: msg.channel_id ?? '',
-            author: msg.author_name ?? 'unknown',
-            author_type: msg.author_type ?? 'unknown',
-            author_id: msg.author_id ?? '',
-            message_id: msg.message_id ?? '',
-            timestamp: msg.timestamp ?? '',
+            channel_id: metaValue(msg.channel_id ?? ''),
+            author: metaValue(msg.author_name ?? 'unknown'),
+            author_type: safeAuthorType(msg.author_type ?? 'unknown'),
+            author_id: metaValue(msg.author_id ?? ''),
+            message_id: metaValue(msg.message_id ?? ''),
+            timestamp: metaValue(msg.timestamp ?? ''),
             // KTK-385 — thread identity rides `meta`, which is what
             // becomes the `<channel …>` tag's attributes. Only emitted
             // when the message is actually in a thread, so a parent-feed
             // message produces the same tag it always has.
-            ...(msg.thread_id ? { thread_id: msg.thread_id } : {}),
-            ...(msg.thread_title ? { thread_title: msg.thread_title } : {}),
+            //
+            // KTK-393 — thread_title is the reachable one: unlike author
+            // names, it is free text typed by whoever opened the thread.
+            ...(msg.thread_id ? { thread_id: metaValue(msg.thread_id) } : {}),
+            ...(msg.thread_title ? { thread_title: metaValue(msg.thread_title) } : {}),
             ...(imageRef ? { image_path: imageRef } : {}),
           },
         },
@@ -464,12 +498,12 @@ async function main() {
           channel: 'kritaka',
           content: `${msg.author_name} reacted with ${msg.emoji} on message ${msg.message_id}`,
           meta: {
-            channel_id: msg.channel_id ?? '',
-            author: msg.author_name ?? 'unknown',
-            author_type: msg.author_type ?? 'unknown',
-            author_id: msg.author_id ?? '',
-            message_id: msg.message_id ?? '',
-            emoji: msg.emoji ?? '',
+            channel_id: metaValue(msg.channel_id ?? ''),
+            author: metaValue(msg.author_name ?? 'unknown'),
+            author_type: safeAuthorType(msg.author_type ?? 'unknown'),
+            author_id: metaValue(msg.author_id ?? ''),
+            message_id: metaValue(msg.message_id ?? ''),
+            emoji: metaValue(msg.emoji ?? ''),
             action: msg.action ?? 'add',
             timestamp: msg.timestamp ?? '',
             event_type: 'reaction',
